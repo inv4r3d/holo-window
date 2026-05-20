@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Off-axis Hologram (Mobile Ready)</title>
+    <title>Off-axis Hologram: Coral</title>
     <style>
         body {
             margin: 0;
             overflow: hidden;
             background-color: #000;
             font-family: sans-serif;
-            touch-action: none; /* Отключаем стандартные жесты */
+            touch-action: none;
         }
         canvas {
             display: block;
@@ -34,7 +34,7 @@
             height: 100%;
             object-fit: cover;
         }
-        #loading {
+        #status {
             position: absolute;
             top: 50%;
             left: 50%;
@@ -44,13 +44,15 @@
             text-align: center;
             pointer-events: none;
             z-index: 20;
+            line-height: 1.5;
         }
     </style>
     
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
@@ -60,7 +62,7 @@
 </head>
 <body>
 
-<div id="loading">Загрузка нейросети...<br><small style="color:#aaa;">Разрешите доступ к камере</small></div>
+<div id="status">Загрузка нейросети камеры...</div>
 
 <div id="webcam-container">
     <video id="webcam" autoplay playsinline></video>
@@ -68,80 +70,132 @@
 
 <script type="module">
     import * as THREE from 'three';
+    import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 
     let targetX = 0, targetY = 0, targetZ = 0.5;
-    
-    // Базовые физические размеры (для смартфона они меньше, но оставим средние, чтобы работало везде)
     let SCREEN_WIDTH = 0.345;
     let SCREEN_HEIGHT = 0.215;
 
-    // Адаптируем виртуальное окно под пропорции текущего экрана устройства
     function updateScreenBounds() {
         const aspect = window.innerWidth / window.innerHeight;
-        if (aspect > 1) { // Альбомная (ПК или перевернутый телефон)
+        if (aspect > 1) { 
             SCREEN_HEIGHT = 0.22;
             SCREEN_WIDTH = SCREEN_HEIGHT * aspect;
-        } else { // Портретная (Смартфон вертикально)
-            SCREEN_WIDTH = 0.15; // ~15 см ширина экрана телефона
+        } else { 
+            SCREEN_WIDTH = 0.15; 
             SCREEN_HEIGHT = SCREEN_WIDTH / aspect;
         }
     }
     updateScreenBounds();
 
-    const loadingEl = document.getElementById('loading');
+    const statusEl = document.getElementById('status');
 
-    // Сцена
+    // === 1. ИНИЦИАЛИЗАЦИЯ THREE.JS ===
     const scene = new THREE.Scene();
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
     document.body.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
 
-    // Комната
-    const roomGeometry = new THREE.BoxGeometry(SCREEN_WIDTH, SCREEN_HEIGHT, 0.4); 
-    const roomMaterial = new THREE.MeshStandardMaterial({ color: 0x0a0a0f, side: THREE.BackSide, roughness: 0.7 });
+    // Коробка-аквариум
+    const roomGeometry = new THREE.BoxGeometry(SCREEN_WIDTH, SCREEN_HEIGHT, 0.6); 
+    const roomMaterial = new THREE.MeshBasicMaterial({ color: 0x050a10, side: THREE.BackSide }); // Сделали фон чуть более глубоким синим под морскую тематику
     const room = new THREE.Mesh(roomGeometry, roomMaterial);
-    room.position.set(0, 0, -0.2); 
-    room.receiveShadow = true;
+    room.position.set(0, 0, -0.3); 
     scene.add(room);
 
-    const gridHelper = new THREE.BoxHelper(room, 0x00ff88);
+    const gridHelper = new THREE.BoxHelper(room, 0x003355);
     scene.add(gridHelper);
 
-    // Предметы
-    const tableGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.05, 32);
-    const tableMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-    const table = new THREE.Mesh(tableGeo, tableMat);
-    table.position.set(0, -SCREEN_HEIGHT/2 + 0.025, -0.15);
-    table.castShadow = true;
-    scene.add(table);
+    // === 2. ЗАГРУЗКА PLY ФАЙЛА (КОРАЛЛ) ===
+    let pointCloudMesh = null;
+    const loader = new PLYLoader();
 
-    const pillGeo = new THREE.CapsuleGeometry(0.008, 0.015, 8, 16);
-    const pillMat = new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.2 });
-    const pill = new THREE.Mesh(pillGeo, pillMat);
-    pill.position.set(0, -SCREEN_HEIGHT/2 + 0.06, -0.15);
-    pill.rotation.z = Math.PI / 3;
-    pill.castShadow = true;
-    scene.add(pill);
+    statusEl.innerText = "Загрузка 3D модели коралла...";
 
-    // Свет
-    scene.add(new THREE.AmbientLight(0xffffff, 0.1));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    dirLight.position.set(0, SCREEN_HEIGHT/2, -0.05);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
+    loader.load('coral.ply', function (geometry) {
+        
+        const positionAttr = geometry.getAttribute('position');
+        const colorAttr = geometry.getAttribute('color');
+        
+        // ОПТИМИЗАЦИЯ: Если файл тяжелый, поменяй 1 на 2, 3 или 5.
+        const stride = 1; 
+        const newCount = Math.floor(positionAttr.count / stride);
+        
+        const optimizedGeometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(newCount * 3);
+        const colors = new Float32Array(newCount * 3);
+        
+        let targetIndex = 0;
+        for (let i = 0; i < positionAttr.count; i += stride) {
+            positions[targetIndex * 3]     = positionAttr.getX(i);
+            positions[targetIndex * 3 + 1] = positionAttr.getY(i);
+            positions[targetIndex * 3 + 2] = positionAttr.getZ(i);
+            
+            if (colorAttr) {
+                colors[targetIndex * 3]     = colorAttr.getX(i);
+                colors[targetIndex * 3 + 1] = colorAttr.getY(i);
+                colors[targetIndex * 3 + 2] = colorAttr.getZ(i);
+            }
+            targetIndex++;
+        }
+        
+        optimizedGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        if (colorAttr) {
+            optimizedGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        }
 
-    const redLight = new THREE.PointLight(0xff0055, 3, 0.4);
-    redLight.position.set(-SCREEN_WIDTH/2, 0, -0.15);
-    scene.add(redLight);
+        const material = new THREE.PointsMaterial({ 
+            size: 0.003, // Сделали точки чуть меньше для изящности коралла
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.95
+        });
 
-    const blueLight = new THREE.PointLight(0x0088ff, 3, 0.4);
-    blueLight.position.set(SCREEN_WIDTH/2, 0, -0.15);
-    scene.add(blueLight);
+        pointCloudMesh = new THREE.Points(optimizedGeometry, material);
 
-    // Матрица проекции
+        // Центрируем модель
+        optimizedGeometry.computeBoundingBox();
+        const center = new THREE.Vector3();
+        optimizedGeometry.boundingBox.getCenter(center);
+        pointCloudMesh.position.sub(center); // Сначала сдвигаем саму модель в её нулевую координату
+
+        // Создаем контейнер, чтобы было удобнее крутить и двигать центрированный объект
+        const coralContainer = new THREE.Group();
+        coralContainer.add(pointCloudMesh);
+
+        // Масштабируем по самому большому измерению (чтобы гарантированно влез в коробку)
+        const size = new THREE.Vector3();
+        optimizedGeometry.boundingBox.getSize(size);
+        const maxDimension = Math.max(size.x, size.y, size.z);
+        const scaleFactor = (SCREEN_HEIGHT * 0.7) / maxDimension; // Занимает 70% высоты экрана
+        coralContainer.scale.setScalar(scaleFactor);
+
+        // Позиционируем контейнер с кораллом внутри нашего виртуального аквариума
+        coralContainer.position.z = -0.2; // Чуть ближе к переднему стеклу
+        // coralContainer.rotation.x = Math.PI / 8; // Раскомментируй и покрути, если он загрузился боком
+
+        scene.add(coralContainer);
+        statusEl.style.display = 'none';
+        
+        geometry.dispose();
+        
+        // Сохраним ссылку на контейнер для анимации (если нужно)
+        window.coralMesh = coralContainer; 
+        
+    }, function (xhr) {
+        if (xhr.total > 0) {
+            const percent = Math.round((xhr.loaded / xhr.total) * 100);
+            statusEl.innerText = `Загрузка коралла: ${percent}%`;
+        }
+    }, function (error) {
+        console.error(error);
+        statusEl.innerText = "Ошибка загрузки coral.ply";
+    });
+
+
+    // === 3. МАТРИЦА OFF-AXIS ===
     function updateOffAxisProjection(cam, x, y, z) {
         const near = 0.01;
         const far = 10;
@@ -155,20 +209,17 @@
         cam.rotation.set(0, 0, 0);
     }
 
-    // Трекинг
+    // === 4. ТРЕКИНГ ЛИЦА ===
     const videoElement = document.getElementById('webcam');
 
     function onResults(results) {
-        if (loadingEl.style.display !== 'none') loadingEl.style.display = 'none';
-
         if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
             const landmarks = results.multiFaceLandmarks[0];
             const bridgeOfNose = landmarks[168];
 
-            // Коэффициенты для плавного трекинга
             targetX = -(bridgeOfNose.x - 0.5) * 0.5; 
             targetY = -(bridgeOfNose.y - 0.5) * 0.4;
-            targetZ = 0.3 + (bridgeOfNose.z * -1.2);
+            targetZ = 0.35 + (bridgeOfNose.z * -1.2);
             if (targetZ < 0.15) targetZ = 0.15;
         }
     }
@@ -178,13 +229,12 @@
     });
     faceMesh.setOptions({
         maxNumFaces: 1,
-        refineLandmarks: false, // Отключаем детализацию губ ради производительности на смартфонах
+        refineLandmarks: false,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5
     });
     faceMesh.onResults(onResults);
 
-    // Принудительно запрашиваем СЕЛФИ-камеру (facingMode: 'user')
     const cameraUtils = new Camera(videoElement, {
         onFrame: async () => { await faceMesh.send({ image: videoElement }); },
         width: { ideal: 640 },
@@ -193,12 +243,17 @@
     });
     cameraUtils.start();
 
-    // Рендер-цикл
+
+    // === 5. РЕНДЕР-ЦИКЛ ===
     let currentX = 0, currentY = 0, currentZ = 0.5;
 
     function animate() {
         requestAnimationFrame(animate);
-        pill.rotation.y += 0.01;
+
+        // Легкое вращение коралла, чтобы разглядеть его со всех сторон (опционально)
+        if (window.coralMesh) {
+            window.coralMesh.rotation.y += 0.002; 
+        }
 
         currentX += (targetX - currentX) * 0.15;
         currentY += (targetY - currentY) * 0.15;
@@ -210,9 +265,8 @@
 
     window.addEventListener('resize', () => {
         updateScreenBounds();
-        // Пересоздаем геометрию комнаты под новые пропорции экрана телефона
         room.geometry.dispose();
-        room.geometry = new THREE.BoxGeometry(SCREEN_WIDTH, SCREEN_HEIGHT, 0.4);
+        room.geometry = new THREE.BoxGeometry(SCREEN_WIDTH, SCREEN_HEIGHT, 0.6);
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
